@@ -10,20 +10,45 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 
-
 public class Main {
+
+    private static int NODE_PORT;
+    private static List<Integer> CLUSTER_PORTS;
 
     // In-memory key–value store (shared, thread-safe)
     private static final KVStore kvStore = new KVStore();
 
+    // Stores cluster configs and return cluster index for corresponding key
+    private static ClusterManager clusterManager;
+
     public static void main(String[] args) throws IOException {
+        if (args.length < 2) {
+            System.err.println("Usage: <port> <clusterPorts>");
+            System.exit(1);
+        }
+
+        int myPort = Integer.parseInt(args[0]);
+        String[] portStrings = args[1].split(",");
+
+        List<Integer> clusterPorts = new ArrayList<>();
+        for (String portString : portStrings) {
+            clusterPorts.add(Integer.parseInt(portString));
+        }
+
+        NODE_PORT = myPort;
+        CLUSTER_PORTS = clusterPorts;
+
+        clusterManager = new ClusterManager(clusterPorts);
+
 
         HttpServer server = HttpServer.create(
-                new InetSocketAddress(8080), 0
+                new InetSocketAddress(NODE_PORT), 0
         );
 
         server.createContext("/put", new PutHandler());
@@ -43,7 +68,8 @@ public class Main {
             System.out.println("Shutdown complete.");
         }));
 
-        System.out.println("KV Store running on port 8080");
+        System.out.println("Node started on port " + NODE_PORT);
+        System.out.println("Cluster nodes: " + CLUSTER_PORTS);
     }
 
     // Handler for PUT operation
