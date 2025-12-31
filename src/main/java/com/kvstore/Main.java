@@ -78,76 +78,143 @@ public class Main {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
 
-            String method = exchange.getRequestMethod();
-
-            if (!method.equalsIgnoreCase("PUT")) {
+            // Method validation
+            if (!exchange.getRequestMethod().equalsIgnoreCase("PUT")) {
                 String response = "Method Not Allowed";
                 exchange.sendResponseHeaders(405, response.length());
-                OutputStream os = exchange.getResponseBody();
-                os.write(response.getBytes());
-                os.close();
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(response.getBytes());
+                }
                 return;
             }
 
+            // Parse query parameters
             URI requestUri = exchange.getRequestURI();
             String query = requestUri.getQuery();
 
             String key = null;
             String value = null;
+            boolean isReplicaWrite = false;
 
             if (query != null) {
-                String[] params = query.split("&");
-                for (String param : params) {
+                for (String param : query.split("&")) {
                     String[] pair = param.split("=");
-                    if (pair.length == 2) {
-                        if (pair[0].equals("key")) {
+                    if (pair.length != 2) continue;
+
+                    switch (pair[0]) {
+                        case "key":
                             key = URLDecoder.decode(pair[1], StandardCharsets.UTF_8);
-                        } else if (pair[0].equals("value")) {
+                            break;
+                        case "value":
                             value = URLDecoder.decode(pair[1], StandardCharsets.UTF_8);
-                        }
+                            break;
+                        case "replica":
+                            isReplicaWrite = pair[1].equalsIgnoreCase("true");
+                            break;
                     }
                 }
             }
 
+            // Validate input
             if (key == null || value == null) {
                 String response = "Missing key or value";
                 exchange.sendResponseHeaders(400, response.length());
-                OutputStream os = exchange.getResponseBody();
-                os.write(response.getBytes());
-                os.close();
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(response.getBytes());
+                }
                 return;
             }
 
+            // REPLICA WRITES: STORE AND STOP (primary BUG fixed)
+            if (isReplicaWrite) {
+                kvStore.put(key, value);
+
+                System.out.println(
+                        "[REPLICA] Stored key=" + key + " on port " + NODE_PORT
+                );
+
+                String response = "Replica stored key=" + key;
+                exchange.sendResponseHeaders(200, response.length());
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(response.getBytes());
+                }
+                return;
+            }
+
+            // Ownership check (ONLY for client writes)
             int ownerPort = clusterManager.getOwnerPort(key);
 
             if (ownerPort != NODE_PORT) {
                 try {
-                    String response = RequestForwarder.forwardPut(ownerPort, key, value);
+                    String response = RequestForwarder.forwardPut(
+                            ownerPort, key, value, false
+                    );
                     exchange.sendResponseHeaders(200, response.length());
-                    OutputStream os = exchange.getResponseBody();
-                    os.write(response.getBytes());
-                    os.close();
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(response.getBytes());
+                    }
                     return;
                 } catch (Exception e) {
                     String response = "Forwarding failed: " + e.getMessage();
                     exchange.sendResponseHeaders(500, response.length());
-                    OutputStream os = exchange.getResponseBody();
-                    os.write(response.getBytes());
-                    os.close();
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(response.getBytes());
+                    }
                     return;
                 }
             }
 
-            String response;
-
+            // PRIMARY WRITE
             kvStore.put(key, value);
-            response = "Stored key = " + key;
+
+            System.out.println(
+                    "[PRIMARY] Stored key=" + key + " on port " + NODE_PORT + " (client write)"
+            );
+
+            // ASYNC REPLICATION (PRIMARY ONLY)
+            int replicaPort = clusterManager.getReplicaPort(key);
+            if (replicaPort != NODE_PORT) {
+                final String finalKey = key;
+                final String finalValue = value;
+                final int replicaPortFinal = replicaPort;
+
+                new Thread(() -> {
+                    try {
+                        System.out.println(
+                                "[REPLICA] Replicating key=" + finalKey +
+                                        " from port " + NODE_PORT +
+                                        " to replica port " + replicaPortFinal
+                        );
+
+                        RequestForwarder.forwardPut(
+                                replicaPortFinal,
+                                finalKey,
+                                finalValue,
+                                true
+                        );
+
+                        System.out.println(
+                                "[REPLICA] Replication success for key=" + finalKey +
+                                        " on replica port " + replicaPortFinal
+                        );
+
+                    } catch (Exception e) {
+                        System.err.println(
+                                "Replication failed for key " + finalKey + " : " + e.getMessage()
+                        );
+                    }
+                }).start();
+            }
+
+            // Respond to client
+            String response = "Stored key = " + key;
             exchange.sendResponseHeaders(200, response.length());
-            OutputStream os = exchange.getResponseBody();
-            os.write(response.getBytes());
-            os.close();
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(response.getBytes());
+            }
         }
     }
+
 
     // Handler for GET operation
     static class GetHandler implements HttpHandler {
@@ -155,25 +222,24 @@ public class Main {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
 
-            String method = exchange.getRequestMethod();
-
-            if (!method.equalsIgnoreCase("GET")) {
+            // Enforce HTTP method contract
+            if (!exchange.getRequestMethod().equalsIgnoreCase("GET")) {
                 String response = "Method Not Allowed";
                 exchange.sendResponseHeaders(405, response.length());
-                OutputStream os = exchange.getResponseBody();
-                os.write(response.getBytes());
-                os.close();
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(response.getBytes());
+                }
                 return;
             }
 
+            // Parse query parameters
             URI requestUri = exchange.getRequestURI();
             String query = requestUri.getQuery();
 
             String key = null;
 
             if (query != null) {
-                String[] params = query.split("&");
-                for (String param : params) {
+                for (String param : query.split("&")) {
                     String[] pair = param.split("=");
                     if (pair.length == 2 && pair[0].equals("key")) {
                         key = URLDecoder.decode(pair[1], StandardCharsets.UTF_8);
@@ -181,48 +247,72 @@ public class Main {
                 }
             }
 
-            if  (key == null) {
+            // Validate input
+            if (key == null) {
                 String response = "Missing key";
-                exchange.sendResponseHeaders(404, response.length());
-                OutputStream os = exchange.getResponseBody();
-                os.write(response.getBytes());
-                os.close();
+                exchange.sendResponseHeaders(400, response.length());
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(response.getBytes());
+                }
                 return;
             }
 
-            int ownerPort = clusterManager.getOwnerPort(key);
-            if (ownerPort != NODE_PORT) {
-                try {
-                    String response = RequestForwarder.forwardGet(ownerPort, key);
-                    exchange.sendResponseHeaders(200, response.length());
-                    OutputStream os = exchange.getResponseBody();
-                    os.write(response.getBytes());
-                    os.close();
-                    return;
-                } catch (Exception e) {
-                    String response = "Forwarding failed: " + e.getMessage();
-                    exchange.sendResponseHeaders(500, response.length());
-                    OutputStream os = exchange.getResponseBody();
-                    os.write(response.getBytes());
-                    os.close();
-                    return;
+            int primaryPort = clusterManager.getOwnerPort(key);
+            int replicaPort = clusterManager.getReplicaPort(key);
+
+            // Case 1: This node is primary
+            if (primaryPort == NODE_PORT) {
+                String value = kvStore.get(key);
+                if (value == null) {
+                    exchange.sendResponseHeaders(404, 0);
+                } else {
+                    exchange.sendResponseHeaders(200, value.length());
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(value.getBytes());
+                    }
                 }
+                return;
             }
 
-            String response;
-
-            String value = kvStore.get(key);
-            if (value == null) {
-                response = "Key not found";
-                exchange.sendResponseHeaders(404, response.length());
-            } else {
-                response = value;
+            // Case 2: Try primary first
+            try {
+                String response = RequestForwarder.forwardGet(primaryPort, key);
                 exchange.sendResponseHeaders(200, response.length());
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(response.getBytes());
+                }
+                return;
+            } catch (Exception e) {
+                System.err.println(
+                        "[GET] Primary unavailable for key=" + key
+                );
             }
 
-            OutputStream os = exchange.getResponseBody();
-            os.write(response.getBytes());
-            os.close();
+            // Case 3: If this node is the replica, read locally
+            if (replicaPort == NODE_PORT) {
+                String value = kvStore.get(key);
+                if (value == null) {
+                    exchange.sendResponseHeaders(404, 0);
+                } else {
+                    exchange.sendResponseHeaders(200, value.length());
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(value.getBytes());
+                    }
+                }
+                return;
+            }
+
+            // Case 4: Forward to replica
+            try {
+                String response = RequestForwarder.forwardGet(replicaPort, key);
+                exchange.sendResponseHeaders(200, response.length());
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(response.getBytes());
+                }
+            } catch (Exception e) {
+                exchange.sendResponseHeaders(503, 0);
+            }
+
         }
     }
 }

@@ -16,4 +16,11 @@ public class ClusterManager {
         int index = Math.abs(hash) % clusterPorts.size();
         return clusterPorts.get(index);
     }
+
+    public int getReplicaPort(String key) {
+        int hash = key.hashCode();
+        int ownerPort = Math.abs(hash) % clusterPorts.size();
+        int replicaPort = (ownerPort + 1) % clusterPorts.size();
+        return clusterPorts.get(replicaPort);
+    }
 }

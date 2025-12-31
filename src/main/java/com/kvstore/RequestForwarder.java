@@ -6,8 +6,10 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 
 public class RequestForwarder {
-    public static String forwardPut(int port, String key, String value) throws Exception {
+    public static String forwardPut(int port, String key, String value, boolean isReplica) throws Exception {
         String urlStr = "http://localhost:" + port + "/put?key=" + key + "&value=" + value;
+        if (isReplica) urlStr += "&replica=true";
+
         URL url = new URL(urlStr);
 
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
