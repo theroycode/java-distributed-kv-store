@@ -109,17 +109,40 @@ public class Main {
                 }
             }
 
-            String response;
-
             if (key == null || value == null) {
-                response = "Missing key or value";
+                String response = "Missing key or value";
                 exchange.sendResponseHeaders(400, response.length());
-            } else {
-                kvStore.put(key, value);
-                response = "Stored key=" + key;
-                exchange.sendResponseHeaders(200, response.length());
+                OutputStream os = exchange.getResponseBody();
+                os.write(response.getBytes());
+                os.close();
+                return;
             }
 
+            int ownerPort = clusterManager.getOwnerPort(key);
+
+            if (ownerPort != NODE_PORT) {
+                try {
+                    String response = RequestForwarder.forwardPut(ownerPort, key, value);
+                    exchange.sendResponseHeaders(200, response.length());
+                    OutputStream os = exchange.getResponseBody();
+                    os.write(response.getBytes());
+                    os.close();
+                    return;
+                } catch (Exception e) {
+                    String response = "Forwarding failed: " + e.getMessage();
+                    exchange.sendResponseHeaders(500, response.length());
+                    OutputStream os = exchange.getResponseBody();
+                    os.write(response.getBytes());
+                    os.close();
+                    return;
+                }
+            }
+
+            String response;
+
+            kvStore.put(key, value);
+            response = "Stored key = " + key;
+            exchange.sendResponseHeaders(200, response.length());
             OutputStream os = exchange.getResponseBody();
             os.write(response.getBytes());
             os.close();
@@ -158,20 +181,43 @@ public class Main {
                 }
             }
 
+            if  (key == null) {
+                String response = "Missing key";
+                exchange.sendResponseHeaders(404, response.length());
+                OutputStream os = exchange.getResponseBody();
+                os.write(response.getBytes());
+                os.close();
+                return;
+            }
+
+            int ownerPort = clusterManager.getOwnerPort(key);
+            if (ownerPort != NODE_PORT) {
+                try {
+                    String response = RequestForwarder.forwardGet(ownerPort, key);
+                    exchange.sendResponseHeaders(200, response.length());
+                    OutputStream os = exchange.getResponseBody();
+                    os.write(response.getBytes());
+                    os.close();
+                    return;
+                } catch (Exception e) {
+                    String response = "Forwarding failed: " + e.getMessage();
+                    exchange.sendResponseHeaders(500, response.length());
+                    OutputStream os = exchange.getResponseBody();
+                    os.write(response.getBytes());
+                    os.close();
+                    return;
+                }
+            }
+
             String response;
 
-            if (key == null) {
-                response = "Missing key";
-                exchange.sendResponseHeaders(400, response.length());
+            String value = kvStore.get(key);
+            if (value == null) {
+                response = "Key not found";
+                exchange.sendResponseHeaders(404, response.length());
             } else {
-                String value = kvStore.get(key);
-                if (value == null) {
-                    response = "Key not found";
-                    exchange.sendResponseHeaders(404, response.length());
-                } else {
-                    response = value;
-                    exchange.sendResponseHeaders(200, response.length());
-                }
+                response = value;
+                exchange.sendResponseHeaders(200, response.length());
             }
 
             OutputStream os = exchange.getResponseBody();
