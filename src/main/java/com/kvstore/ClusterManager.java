@@ -13,14 +13,14 @@ public class ClusterManager {
     // Decide which node owns a given key
     public int getOwnerPort(String key) {
         int hash = key.hashCode();
-        int index = Math.abs(hash) % clusterPorts.size();
+        int index = (key.hashCode() & Integer.MAX_VALUE) % clusterPorts.size();
         return clusterPorts.get(index);
     }
 
     public int getReplicaPort(String key) {
         int hash = key.hashCode();
-        int ownerPort = Math.abs(hash) % clusterPorts.size();
-        int replicaPort = (ownerPort + 1) % clusterPorts.size();
-        return clusterPorts.get(replicaPort);
+        int ownerPortIndex = (key.hashCode() & Integer.MAX_VALUE) % clusterPorts.size();
+        int replicaPortIndex = (ownerPortIndex + 1) % clusterPorts.size();
+        return clusterPorts.get(replicaPortIndex);
     }
 }
